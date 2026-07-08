@@ -1,0 +1,46 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: ibm-ace-bar-publish
+  labels:
+    app.kubernetes.io/part-of: ace-infra
+  annotations:
+    description: Publish a built BAR to the in-cluster BAR host (nginx) so an IntegrationRuntime's barURL can fetch it.
+spec:
+  description: >-
+    Copy the built BAR onto the BAR host that serves the `barURL` an IntegrationRuntime
+    references, then verify it is served. Reusable — the host namespace/selector and
+    served filename are parameters. (The pipeline SA needs edit on the host namespace
+    for the `oc cp`.)
+  params:
+    - name: bar-file
+      description: BAR filename in the workspace root to publish.
+      default: createcustomer.bar
+    - name: bar-host-namespace
+      description: Namespace of the BAR host (nginx) that serves the barURL.
+      default: tools
+    - name: bar-host-selector
+      description: Substring matching the BAR host pod name.
+      default: ace-bar
+    - name: serve-path
+      description: Directory the BAR host serves from.
+      default: /usr/share/nginx/html
+  workspaces:
+    - name: source
+      description: Shared workspace containing the built BAR at its root.
+  steps:
+    - name: publish
+      image: quay.io/openshift/origin-cli:4.18
+      script: |
+        #!/bin/bash
+        set -e
+        POD=$(oc get pods -n "$(params.bar-host-namespace)" -o name | grep "$(params.bar-host-selector)" | head -1)
+        [ -n "$POD" ] || { echo "No BAR host pod matching '$(params.bar-host-selector)' in $(params.bar-host-namespace)"; exit 1; }
+        echo "BAR host pod: $POD"
+        # remove any existing BAR first — oc cp's tar extraction fails "File exists" over an existing file
+        oc exec -n "$(params.bar-host-namespace)" "${POD#pod/}" -- rm -f "$(params.serve-path)/$(params.bar-file)" || true
+        oc cp "$(workspaces.source.path)/$(params.bar-file)" \
+          "$(params.bar-host-namespace)/${POD#pod/}:$(params.serve-path)/$(params.bar-file)"
+        SZ=$(oc exec -n "$(params.bar-host-namespace)" "$POD" -- stat -c%s "$(params.serve-path)/$(params.bar-file)")
+        echo "Published $(params.bar-file): ${SZ} bytes"
+        [ "$SZ" -gt 1000 ] && echo "PUBLISH OK" || { echo "Published BAR too small"; exit 1; }

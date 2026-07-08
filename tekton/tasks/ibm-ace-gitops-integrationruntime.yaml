@@ -1,0 +1,116 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: ibm-ace-gitops-integrationruntime
+  labels:
+    app.kubernetes.io/part-of: ace-infra
+  annotations:
+    description: Render an IntegrationRuntime CR (App Connect 13.x model) into a gitops-apps environment overlay and deliver it as a commit.
+spec:
+  description: >-
+    The delivery stage. Renders an **IntegrationRuntime** CR — the 2026 App Connect model
+    (barURL + Configurations), NOT the deprecated IntegrationServer/Dashboard/Designer CRs —
+    into `ace/environments/<environment>/<runtime-name>/` of the gitops-apps repo, writes a
+    kustomization alongside the Configurations delivered by the config side, and pushes to a
+    delivery branch. Reusable across integrations and environments via params. The pipeline's
+    only exit is a commit.
+  params:
+    - name: gitops-org-repo
+      description: "org/repo of the gitops-apps repository (Argo CD watches it)."
+      default: ibmclientengineering/multi-tenancy-gitops-apps
+    - name: delivery-branch
+      description: Branch to push the delivery to.
+      default: ace-createcustomer-dev-delivery
+    - name: environment
+      description: Target environment overlay (dev / staging / prod).
+      default: dev
+    - name: runtime-name
+      description: IntegrationRuntime name (also the overlay subdirectory).
+      default: createcustomer
+    - name: bar-url
+      description: The barURL the IntegrationRuntime fetches (the published BAR).
+      default: http://ace-bar.tools.svc/createcustomer.bar
+    - name: configurations
+      description: Space-separated Configuration names the runtime references (barauth, serverconf, policyproject, ...).
+      default: "createcustomer-barauth create-customer-serverconf create-customer-policy"
+    - name: license
+      description: The 13.x operand license id (re-derive from the live CSV alm-examples, not a blog).
+      default: L-RJGW-BUAA2R
+    - name: use
+      description: License use string.
+      default: CloudPakForIntegrationNonProductionFREE
+    - name: version
+      description: IntegrationRuntime operand version.
+      default: "13.0"
+  steps:
+    - name: deliver
+      image: docker.io/alpine/git:2.45.2
+      env:
+        - name: GIT_USER
+          valueFrom:
+            secretKeyRef:
+              name: git-credentials
+              key: username
+        - name: GIT_PASS
+          valueFrom:
+            secretKeyRef:
+              name: git-credentials
+              key: password
+      script: |
+        #!/bin/sh
+        set -e
+        cd /tmp
+        rm -rf ga
+        git clone --depth 1 "https://${GIT_USER}:${GIT_PASS}@github.com/$(params.gitops-org-repo).git" ga
+        cd ga
+        git checkout -B "$(params.delivery-branch)"
+        DIR="ace/environments/$(params.environment)/$(params.runtime-name)"
+        mkdir -p "$DIR"
+
+        # build the configurations: YAML list from the space-separated param
+        CONFIG_YAML=""
+        for c in $(params.configurations); do
+          CONFIG_YAML="${CONFIG_YAML}    - ${c}
+        "
+        done
+
+        # render the IntegrationRuntime CR (13.x model: barURL + configurations)
+        cat > "$DIR/integrationruntime.yaml" <<IR
+        apiVersion: appconnect.ibm.com/v1beta1
+        kind: IntegrationRuntime
+        metadata:
+          name: $(params.runtime-name)
+          annotations:
+            argocd.argoproj.io/sync-wave: "300"
+        spec:
+          license:
+            accept: true
+            license: $(params.license)
+            use: $(params.use)
+          version: '$(params.version)'
+          replicas: 1
+          barURL:
+            - $(params.bar-url)
+          configurations:
+        ${CONFIG_YAML}
+        IR
+
+        # kustomization: the IntegrationRuntime plus the Configurations delivered by the config side
+        RESOURCES="  - integrationruntime.yaml"
+        [ -f "$DIR/configurations.yaml" ] && RESOURCES="  - configurations.yaml
+        ${RESOURCES}"
+        cat > "$DIR/kustomization.yaml" <<KUST
+        apiVersion: kustomize.config.k8s.io/v1beta1
+        kind: Kustomization
+        resources:
+        ${RESOURCES}
+        KUST
+
+        echo "=== delivered IntegrationRuntime ==="
+        cat "$DIR/integrationruntime.yaml"
+        git config user.email "tekton@ibmclientengineering"
+        git config user.name "ACE pipeline"
+        git add -A
+        git commit -m "ACE delivery: $(params.runtime-name) IntegrationRuntime -> $(params.environment)" || echo "no changes to commit"
+        git push -f origin "$(params.delivery-branch)"
+        echo "DELIVERED to branch $(params.delivery-branch)"

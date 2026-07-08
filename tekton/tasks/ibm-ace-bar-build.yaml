@@ -1,0 +1,56 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: ibm-ace-bar-build
+  labels:
+    app.kubernetes.io/part-of: ace-infra
+  annotations:
+    description: Build an App Connect BAR from source using ibmint (App Connect 13.x). Reusable across integrations.
+spec:
+  description: >-
+    Package one or more App Connect projects into a BAR file with `ibmint package`,
+    running inside the current App Connect 13.x server image. Reusable — set `projects`
+    to whatever the integration needs. This is the 2026 model: `ibmint` on the 13.x
+    image, not a Toolkit-exported BAR and not the retired 12.0.x tooling.
+  params:
+    - name: source-subdir
+      description: Subdirectory in the source workspace holding the ACE projects.
+      default: src
+    - name: projects
+      description: Space-separated list of ACE projects to package into the BAR.
+      default: "createcustomer createcustomerJava"
+    - name: bar-file
+      description: Output BAR filename, written to the workspace root.
+      default: createcustomer.bar
+    - name: ace-image
+      description: >-
+        The App Connect server image that provides `ibmint` (13.x). Pull it from the
+        live operator's operand rather than a blog — re-derive on operator upgrades.
+      default: "cp.icr.io/cp/appc/ace-server-prod:13.0.8.0-r1-20260626-183124@sha256:6c288ebbf9135c5cd4c155b55f4d8379cc447f20a54911e2aedb15376c6aef23"
+  workspaces:
+    - name: source
+      description: Shared workspace containing the cloned source under <source-subdir>.
+  steps:
+    - name: ibmint-package
+      image: $(params.ace-image)
+      env:
+        - name: LICENSE
+          value: accept
+      script: |
+        #!/bin/bash
+        set -e
+        # ibmint compiles the Java project IN PLACE; the git-cloned tree is not writable
+        # by the ACE image's user, so copy it to a dir this user owns first.
+        BUILD="$(workspaces.source.path)/build"
+        rm -rf "$BUILD"
+        cp -r "$(workspaces.source.path)/$(params.source-subdir)" "$BUILD"
+        cd "$BUILD"
+        PROJECT_ARGS=""
+        for p in $(params.projects); do PROJECT_ARGS="$PROJECT_ARGS --project $p"; done
+        echo "Packaging projects:$PROJECT_ARGS"
+        # Note: the 13.x image pre-applies mqsiprofile via its baked env, so `ibmint`
+        # is already on PATH; do not re-source mqsiprofile (it errors "repetition disallowed").
+        /opt/ibm/ace-13/server/bin/ibmint package --input-path . \
+          --output-bar-file "$(workspaces.source.path)/$(params.bar-file)" $PROJECT_ARGS
+        echo "=== BAR produced ==="
+        ls -la "$(workspaces.source.path)/$(params.bar-file)"

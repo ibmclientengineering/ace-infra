@@ -1,0 +1,81 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: ace-createcustomer-dev
+  labels:
+    app.kubernetes.io/part-of: ace-infra
+  annotations:
+    description: Build an App Connect integration from source and deliver an IntegrationRuntime as a GitOps commit.
+spec:
+  description: >-
+    The App Connect delivery pipeline — the sibling of MQ's `mq-qm-dev`, on the same rails.
+    A push to the integration source produces two things: a BAR (built with `ibmint` on the
+    13.x image, functionally publishable) and an **IntegrationRuntime** CR committed into the
+    gitops-apps `dev` overlay. Argo CD does the deploying. Built from the reusable `ace-infra`
+    task library, so one pipeline serves every integration — change the params, not the tasks.
+  params:
+    - name: git-url
+      description: The integration source repo.
+      default: https://github.com/ibmclientengineering/create-customer.git
+    - name: git-revision
+      description: Branch/tag/SHA to build.
+      default: master
+    - name: projects
+      description: Space-separated ACE projects to package.
+      default: "createcustomer createcustomerJava"
+    - name: bar-file
+      default: createcustomer.bar
+    - name: runtime-name
+      description: IntegrationRuntime name / overlay subdir.
+      default: createcustomer
+    - name: environment
+      default: dev
+    - name: bar-url
+      default: http://ace-bar.tools.svc/createcustomer.bar
+    - name: configurations
+      default: "createcustomer-barauth create-customer-serverconf create-customer-policy"
+    - name: gitops-org-repo
+      default: ibmclientengineering/multi-tenancy-gitops-apps
+    - name: delivery-branch
+      default: ace-createcustomer-dev-delivery
+  workspaces:
+    - name: source
+  tasks:
+    - name: clone
+      taskRef:
+        name: ibm-git-clone
+      params:
+        - { name: git-url, value: "$(params.git-url)" }
+        - { name: git-revision, value: "$(params.git-revision)" }
+        - { name: subdir, value: src }
+      workspaces:
+        - { name: source, workspace: source }
+    - name: bar-build
+      runAfter: [ clone ]
+      taskRef:
+        name: ibm-ace-bar-build
+      params:
+        - { name: source-subdir, value: src }
+        - { name: projects, value: "$(params.projects)" }
+        - { name: bar-file, value: "$(params.bar-file)" }
+      workspaces:
+        - { name: source, workspace: source }
+    - name: publish
+      runAfter: [ bar-build ]
+      taskRef:
+        name: ibm-ace-bar-publish
+      params:
+        - { name: bar-file, value: "$(params.bar-file)" }
+      workspaces:
+        - { name: source, workspace: source }
+    - name: gitops-delivery
+      runAfter: [ publish ]
+      taskRef:
+        name: ibm-ace-gitops-integrationruntime
+      params:
+        - { name: gitops-org-repo, value: "$(params.gitops-org-repo)" }
+        - { name: delivery-branch, value: "$(params.delivery-branch)" }
+        - { name: environment, value: "$(params.environment)" }
+        - { name: runtime-name, value: "$(params.runtime-name)" }
+        - { name: bar-url, value: "$(params.bar-url)" }
+        - { name: configurations, value: "$(params.configurations)" }

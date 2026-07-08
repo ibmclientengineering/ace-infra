@@ -1,0 +1,35 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: ibm-git-clone
+  labels:
+    app.kubernetes.io/part-of: ace-infra
+  annotations:
+    description: Shallow-clone a git repository into a subdirectory of the source workspace. Generic and reusable across pipelines.
+spec:
+  description: >-
+    Clone a public git repository (shallow) into $(workspaces.source.path)/<subdir>.
+    Reusable — parameterize the URL, revision, and target subdir.
+  params:
+    - name: git-url
+      description: The https URL of the git repository to clone.
+    - name: git-revision
+      description: Branch, tag, or SHA to check out.
+      default: main
+    - name: subdir
+      description: Subdirectory within the source workspace to clone into.
+      default: src
+  workspaces:
+    - name: source
+      description: Shared workspace; the repo is cloned into <subdir> here.
+  steps:
+    - name: clone
+      image: docker.io/alpine/git:2.45.2
+      script: |
+        #!/bin/sh
+        set -e
+        TARGET="$(workspaces.source.path)/$(params.subdir)"
+        rm -rf "$TARGET"
+        git clone --depth 1 --branch "$(params.git-revision)" "$(params.git-url)" "$TARGET"
+        echo "Cloned $(params.git-url)@$(params.git-revision) into $TARGET:"
+        ls "$TARGET"

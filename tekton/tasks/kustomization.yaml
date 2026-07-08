@@ -1,0 +1,7 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ibm-git-clone.yaml
+  - ibm-ace-bar-build.yaml
+  - ibm-ace-bar-publish.yaml
+  - ibm-ace-gitops-integrationruntime.yaml

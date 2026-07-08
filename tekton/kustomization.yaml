@@ -1,0 +1,7 @@
+# ACE Tekton factory — reusable task library + the createcustomer delivery pipeline.
+# The App Connect sibling of mq-infra//tekton, on the same GitOps rails.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - tasks
+  - pipelines
